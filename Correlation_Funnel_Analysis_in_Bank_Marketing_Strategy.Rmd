@@ -1,0 +1,165 @@
+---
+title: "Term Deposit Prediction & Marketing Analysis"
+author: "Uche Kalu"
+date: "4/9/2022"
+output:
+  pdf_document: default
+  html_document: default
+subtitle: Targeting Customers that are likely to opt into a Term Deposit service
+---
+
+**The goal of this analysis is to determine which features in the bank data relates to the bank's marketing campaign goal of having customers opt-into a TERM DEPOSIT (financial product)**
+
+### **Executive Summary**
+
+\- Duration since last contact and success of prior enrollments are correlated to success of Term Deposit opt-in
+
+\- A strategy targeting customers that haven't been contacted in 319 days and have those with prior enrollments yields 32% positive outcomes (enrollments) vs 4.3% otherwise.
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(recipes)
+library(tidyquant)
+library(ggrepel)
+
+```
+
+### Analyzing and Investigating the Data
+
+```{r save}
+path   <- "bank_term_deposit_marketing_analysis.xlsx"
+sheets <- excel_sheets(path)  # displays all d sheet names in d workbook
+sheets
+```
+
+```{r include=FALSE}
+sheets <- excel_sheets(path)  # displays all d sheet names in d workbook
+sheets
+
+sheets %>%
+  map(~ read_excel(path  = path, sheet = .)) %>%  
+  set_names(sheets)
+```
+
+**Our dataset parameters are in sheets 4 to 7 so we select only 4th to 7th sheets and combine all their data into one sheet.**
+
+```{r results='hide'}
+data_joined_tbl <- sheets[4:7] %>%   
+  map(~ read_excel(path = path, sheet = .)) %>%
+  reduce(left_join)   
+```
+
+```{r}
+data_joined_tbl %>% glimpse()
+```
+
+### Analyze and Prepare the Data using recipe package
+
+**Modeling and Machine learning often involves a response feature (Enrolled in TERM_DEPOSIT, yes/no) and many predictor features (AGE, JOB, MARITAL, etc). We are going to determine which predictors are related to the response variable. We do this using Binary Correlation Analysis**
+
+```{r warning=FALSE, results='hide'}
+recipe_obj <- recipe(~ ., data = data_joined_tbl) %>%  
+  step_rm(ID) %>%                       
+  step_discretize(all_numeric(), options = list(min_unique = 1)) %>%   
+  step_dummy(all_nominal(), one_hot = TRUE, naming = partial(dummy_names, sep = "__")) %>% 
+  prep()  
+
+data_transformed_tbl <- data_joined_tbl %>%
+  bake(recipe_obj, new_data = .) 
+```
+
+```{r}
+data_transformed_tbl %>% glimpse()
+```
+
+### Correlation of various features to Term Deposit enrollment. 
+
+**We perform a correlation analysis between the response variable(TERM_DEPOSIT_yes) and the rest of the features.**
+
+```{r warning=FALSE, message=FALSE}
+correlation_tbl <- data_transformed_tbl %>%  
+  cor(y = data_transformed_tbl$TERM_DEPOSIT__yes) %>%  
+  as_tibble(rownames = "feature") %>%  
+  rename(TERM_DEPOSIT__yes = V1) %>%  
+  separate(feature, into = c("feature", "bin"), sep = "__") %>%  
+  filter(!is.na(TERM_DEPOSIT__yes)) %>%    # removes all NA values
+  filter(!str_detect(feature, "TERM_DEP")) %>%  
+  arrange(abs(TERM_DEPOSIT__yes) %>% desc()) %>%  
+  mutate(feature = as_factor(feature) %>% fct_rev())  
+
+correlation_tbl
+
+```
+
+### Visualize the Correlations Funnel using Scatterplot 
+
+**Examining the result chart, we deduce that Duration since last contact and success of prior enrollments are correlated to success of Term Deposit opt-in.**
+
+```{r warning=FALSE}
+correlation_tbl %>%
+  ggplot(aes(TERM_DEPOSIT__yes, y = feature, text = bin)) + 
+  geom_vline(xintercept = 0, linetype = 2, color = "red") + 
+  geom_point(color = "#2c3e50") +   # creates datapoints in d charts
+  geom_text_repel(aes(label = bin), size = 3, color = "#2c3e50") +  
+  expand_limits(x = c(-0.4, 0.4)) +  # increasing d range of values in x-axis
+  theme_tq() +
+  labs(title = "Bank Marketing Analysis",
+       subtitle = "Correlations to Enrollment in Term Deposit",
+       y = "", x = "Correlation to Term Deposit")
+
+```
+
+### Lets Interpret the Correlations 
+
+**We have bins as values for Duration, Balance, Campaign, Day and Age in the chart and we need to know what values are in them bins?**
+
+```{r}
+recipe_obj %>% tidy()   
+
+bins_tbl <- recipe_obj %>% tidy(2)
+bins_tbl               
+View(bins_tbl)
+
+bins_tbl %>% filter(terms == "DURATION")  
+
+
+```
+
+### STRATEGY
+
+**A strategy targeting customers that haven't been contacted in 319 days and have those with prior enrollments yields 32% positive outcomes (enrollments) vs 4.3% otherwise.**
+
+**We focus on value - BIN4 in DURATION column and value - success in POUTCOME column since they are the top columns that affects Term Deposit enrollment and their stated values are the only values at far RHS**
+
+```{r results='hide'}
+strategy_tbl <- data_joined_tbl %>%  
+  select(DURATION, POUTCOME, TERM_DEPOSIT) %>%  
+  mutate(POTENTIAL = case_when(DURATION > 319 ~ "High Potential",
+                               POUTCOME == "success" ~ "High Potential",  
+                               TRUE ~ "Normal")) %>%    
+  group_by(POTENTIAL) %>%  # displays unique values in d stated column
+  count(TERM_DEPOSIT) %>%  
+  mutate(prop = n / sum(n)) %>%  
+  ungroup() %>%
+  mutate(label_text = str_glue("n: {n}
+                                 prop: {scales::percent(prop)}")) 
+```
+
+```{r}
+strategy_tbl
+```
+
+### REPORT RESULTS using a stacked Bar chart
+
+```{r}
+strategy_tbl %>%
+  ggplot(aes(POTENTIAL, prop, fill = TERM_DEPOSIT)) + 
+  geom_col() +
+  geom_label(aes(label = label_text), fill = "white", color = "#2c3e50") +  
+  scale_fill_tq() +                      # changes d color of d stacked bars 
+  scale_y_continuous(labels = scales::percent_format()) +  
+  theme_tq() +
+  labs(title = "Bank Marketing Strategy",
+       subtitle = str_glue("Targeting customers that haven't been contacted in 319 days or those with prior enrollments yields 32% vs 4.3%"))
+```
